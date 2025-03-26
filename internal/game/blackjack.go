@@ -1,6 +1,7 @@
 package game
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -90,6 +91,11 @@ func (g *BlackjackGame) AddPlayer(playerID, playerName string, initialBalance in
 		}
 	}
 
+	fmt.Println("Adding player", playerName)
+	fmt.Println("Initial balance", initialBalance)
+	fmt.Println("Player ID", playerID)
+	fmt.Println("g.Status", g.Status)
+	fmt.Println("g.Players", g.Players)
 	// If the game is already in progress, don't add new players
 	if g.Status != Waiting {
 		return nil

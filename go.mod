@@ -10,4 +10,7 @@ require (
 	github.com/rs/cors v1.10.1
 )
 
-require golang.org/x/net v0.19.0 // indirect
+require (
+	github.com/lib/pq v1.10.9 // indirect
+	golang.org/x/net v0.19.0 // indirect
+)

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -21,31 +20,21 @@ func main() {
 	// Parse command line flags
 	var (
 		port        = flag.String("port", "8080", "Server port")
-		dbPath      = flag.String("db", "./data/blackjack.db", "Database path")
 		frontendURL = flag.String("frontend", "http://localhost:5173", "Frontend URL for CORS")
 	)
 	flag.Parse()
 
-	// Create data directory if it doesn't exist
-	dataDir := filepath.Dir(*dbPath)
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		log.Fatalf("Failed to create data directory: %v", err)
+	// Initialize the database
+	database, err := db.NewDatabase()
+	if err != nil {
+		log.Fatalf("Failed to initialize database: %v", err)
 	}
+	defer database.Close()
+	log.Println("Database initialized successfully")
 
 	// Initialize the store
-	gameStore := store.NewMemoryStore()
-	log.Println("In-memory game store initialized")
-
-	// Initialize the database
-	database, err := db.NewDatabase(*dbPath)
-	if err != nil {
-		log.Printf("Warning: Failed to initialize database: %v", err)
-		log.Println("Continuing without database persistence")
-		database = nil
-	} else {
-		log.Println("Database initialized successfully")
-		defer database.Close()
-	}
+	gameStore := store.NewDatabaseStore(database)
+	log.Println("Database game store initialized")
 
 	// Initialize WebSocket hub
 	hub := api.NewHub()

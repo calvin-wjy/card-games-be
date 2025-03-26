@@ -2,11 +2,14 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"time"
 
 	"github.com/calvinwijaya/card-games-be/internal/game"
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/lib/pq"
 )
 
 type Database struct {
@@ -24,10 +27,36 @@ type PlayerStats struct {
 }
 
 // NewDatabase creates a new database connection
-func NewDatabase(dbPath string) (*Database, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+func NewDatabase() (*Database, error) {
+	// Get database connection details from environment variables
+	// dbHost := os.Getenv("DB_HOST")
+	// dbPort := os.Getenv("DB_PORT")
+	// dbName := os.Getenv("DB_NAME")
+	// dbUser := os.Getenv("DB_USER")
+	// dbPassword := os.Getenv("DB_PASSWORD")
+
+	// TODO: Remove hardcoded values
+	dbHost := "localhost"
+	dbPort := "5433"
+	dbName := "card_games"
+	dbUser := "card_games_user"
+	dbPassword := "card_games_password"
+
+	// Construct connection string
+	connStr := fmt.Sprintf(
+		"host=%s port=%s dbname=%s user=%s password=%s sslmode=disable",
+		dbHost, dbPort, dbName, dbUser, dbPassword,
+	)
+
+	// Open database connection
+	db, err := sql.Open("postgres", connStr)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error opening database: %v", err)
+	}
+
+	// Test the connection
+	if err := db.Ping(); err != nil {
+		return nil, fmt.Errorf("error connecting to the database: %v", err)
 	}
 
 	// Set connection parameters
@@ -56,7 +85,7 @@ func initTables(db *sql.DB) error {
 		)
 	`)
 	if err != nil {
-		return err
+		return fmt.Errorf("error creating players table: %v", err)
 	}
 
 	// Games table
@@ -64,19 +93,22 @@ func initTables(db *sql.DB) error {
 		CREATE TABLE IF NOT EXISTS games (
 			id TEXT PRIMARY KEY,
 			table_id TEXT NOT NULL,
-			created_at TIMESTAMP NOT NULL,
-			completed_at TIMESTAMP,
-			status TEXT NOT NULL
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP,
+			status TEXT NOT NULL,
+			min_bet INTEGER NOT NULL DEFAULT 10,
+			max_bet INTEGER NOT NULL DEFAULT 1000,
+			game_state JSONB
 		)
 	`)
 	if err != nil {
-		return err
+		return fmt.Errorf("error creating games table: %v", err)
 	}
 
 	// Game results table
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS game_results (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			id SERIAL PRIMARY KEY,
 			game_id TEXT NOT NULL,
 			player_id TEXT NOT NULL,
 			bet INTEGER NOT NULL,
@@ -88,7 +120,7 @@ func initTables(db *sql.DB) error {
 		)
 	`)
 	if err != nil {
-		return err
+		return fmt.Errorf("error creating game_results table: %v", err)
 	}
 
 	return nil
@@ -133,7 +165,7 @@ func (d *Database) GetPlayerByID(playerID string) (*game.Player, error) {
 func (d *Database) CreatePlayer(playerID, playerName string, initialBalance int) error {
 	now := time.Now()
 	_, err := d.db.Exec(
-		"INSERT INTO players (id, name, balance, created_at, last_login) VALUES (?, ?, ?, ?, ?)",
+		"INSERT INTO players (id, name, balance, created_at, last_login) VALUES ($1, $2, $3, $4, $5)",
 		playerID, playerName, initialBalance, now, now,
 	)
 	return err
@@ -159,11 +191,126 @@ func (d *Database) UpdatePlayerLastLogin(playerID string) error {
 
 // SaveGame saves a game to the database
 func (d *Database) SaveGame(game *game.BlackjackGame) error {
-	_, err := d.db.Exec(
-		"INSERT INTO games (id, table_id, created_at, status) VALUES (?, ?, ?, ?)",
-		game.ID, game.TableID, game.CreatedAt, string(game.Status),
-	)
+	// Convert game state to JSON
+	gameState, err := json.Marshal(game)
+	if err != nil {
+		return err
+	}
+
+	_, err = d.db.Exec(`
+		INSERT INTO games (id, table_id, created_at, updated_at, status, game_state, min_bet, max_bet)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (id) DO UPDATE
+		SET updated_at = $4, status = $5, game_state = $6, min_bet = $7, max_bet = $8
+	`,
+		game.ID, game.TableID, game.CreatedAt, time.Now(), string(game.Status), gameState, game.MinBet, game.MaxBet)
 	return err
+}
+
+// GetGame retrieves a game by ID
+func (d *Database) GetGame(id string) (*game.BlackjackGame, error) {
+	var gameState []byte
+	var g game.BlackjackGame
+
+	err := d.db.QueryRow(`
+		SELECT game_state FROM games WHERE id = $1
+	`, id).Scan(&gameState)
+
+	if err != nil {
+		return nil, errors.New("game not found")
+	}
+
+	if err := json.Unmarshal(gameState, &g); err != nil {
+		return nil, err
+	}
+
+	return &g, nil
+}
+
+// GetTableGames retrieves all games for a table
+func (d *Database) GetTableGames(tableID string) ([]*game.BlackjackGame, error) {
+	rows, err := d.db.Query(`
+		SELECT game_state FROM games WHERE table_id = $1 ORDER BY created_at DESC
+	`, tableID)
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var games []*game.BlackjackGame
+	for rows.Next() {
+		var gameState []byte
+		if err := rows.Scan(&gameState); err != nil {
+			return nil, err
+		}
+
+		var g game.BlackjackGame
+		if err := json.Unmarshal(gameState, &g); err != nil {
+			return nil, err
+		}
+
+		games = append(games, &g)
+	}
+
+	return games, nil
+}
+
+// GetActiveTableGame retrieves the active game for a table
+func (d *Database) GetActiveTableGame(tableID string) (*game.BlackjackGame, error) {
+	var gameState []byte
+	var g game.BlackjackGame
+
+	err := d.db.QueryRow(`
+		SELECT game_state FROM games 
+		WHERE table_id = $1 AND status != $2 
+		ORDER BY created_at DESC LIMIT 1
+	`, tableID, string(game.Completed)).Scan(&gameState)
+
+	if err != nil {
+		return nil, errors.New("no active game found for table")
+	}
+
+	if err := json.Unmarshal(gameState, &g); err != nil {
+		return nil, err
+	}
+
+	return &g, nil
+}
+
+// DeleteGame removes a game from the database
+func (d *Database) DeleteGame(id string) error {
+	_, err := d.db.Exec("DELETE FROM games WHERE id = $1", id)
+	return err
+}
+
+// GetAllGames returns all games in the database
+func (d *Database) GetAllGames() ([]*game.BlackjackGame, error) {
+	rows, err := d.db.Query(`
+		SELECT game_state FROM games ORDER BY created_at DESC
+	`)
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var games []*game.BlackjackGame
+	for rows.Next() {
+		var gameState []byte
+		if err := rows.Scan(&gameState); err != nil {
+			return nil, err
+		}
+
+		var g game.BlackjackGame
+		if err := json.Unmarshal(gameState, &g); err != nil {
+			return nil, err
+		}
+
+		games = append(games, &g)
+	}
+
+	return games, nil
 }
 
 // UpdateGameStatus updates a game's status in the database

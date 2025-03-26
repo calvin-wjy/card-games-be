@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -14,13 +15,13 @@ import (
 
 // Handlers contains all the API handlers
 type Handlers struct {
-	store    *store.MemoryStore
+	store    store.Store
 	database *db.Database
 	hub      *Hub
 }
 
 // NewHandlers creates a new instance of Handlers
-func NewHandlers(store *store.MemoryStore, database *db.Database, hub *Hub) *Handlers {
+func NewHandlers(store store.Store, database *db.Database, hub *Hub) *Handlers {
 	return &Handlers{
 		store:    store,
 		database: database,
@@ -92,10 +93,11 @@ func (h *Handlers) NewGame(w http.ResponseWriter, r *http.Request) {
 	g := game.NewBlackjackGame(req.TableID, req.MinBet, req.MaxBet)
 
 	// Change status to betting phase
-	g.Status = game.Betting
+	// g.Status = game.Betting
 
 	// Save to store
 	if err := h.store.SaveGame(g); err != nil {
+		fmt.Println("err: ", err)
 		errorResponse(w, http.StatusInternalServerError, "Failed to save game")
 		return
 	}
@@ -548,6 +550,8 @@ func (h *Handlers) ListTables(w http.ResponseWriter, r *http.Request) {
 			"lastUpdated": g.UpdatedAt.Format(time.RFC3339),
 		}
 	}
+
+	fmt.Println(tables)
 
 	// Convert map to slice for response
 	tablesList := make([]map[string]interface{}, 0, len(tables))
